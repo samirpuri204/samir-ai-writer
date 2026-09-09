@@ -31,7 +31,7 @@ export default function Home() {
       <section id="top" className="hero">
         <motion.div className="hero-copy" style={{ y: heroY, opacity: heroOpacity }}>
           <motion.div className="status-pill" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
-            <span className="pulse" /> Powered by Thinking Machines Inkling <BadgeCheck size={15} />
+            <span className="pulse" /> Powered by OpenRouter Free Router <BadgeCheck size={15} />
           </motion.div>
           <motion.h1 initial={{ opacity: 0, y: 35 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1] }}>
             Write smarter.<br /><span className="gradient-text">Submit beautifully.</span>
@@ -46,7 +46,7 @@ export default function Home() {
           <div className="metric-row">
             <div><strong>2</strong><span>specialized modes</span></div>
             <div><strong>3D</strong><span>motion interface</span></div>
-            <div><strong>1M</strong><span>model context</span></div>
+            <div><strong>200K</strong><span>router context</span></div>
           </div>
         </motion.div>
 
