@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 type Attachment = {
   name: string;
@@ -16,12 +16,46 @@ type ExtractBody = {
   attachments?: Attachment[];
 };
 
-const MODEL = process.env.OPENROUTER_MODEL || "thinkingmachines/inkling:free";
+const MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
+const OPENROUTER_TIMEOUT_MS = 90_000;
+
+async function openRouterFetch(payload: Record<string, unknown>, apiKey: string) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
+  try {
+    return await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000",
+        "X-Title": "ScholarForge AI by Samir Puri",
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+      cache: "no-store",
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const allowedLevels = ["School", "High School", "Undergraduate", "Postgraduate", "Professional"];
 const allowedCitations = ["None", "APA 7th", "MLA 9th", "Harvard", "Chicago", "IEEE"];
 
+async function readProviderPayload(response: Response): Promise<Record<string, any>> {
+  const raw = await response.text();
+  if (!raw.trim()) return {};
+  try {
+    return JSON.parse(raw) as Record<string, any>;
+  } catch {
+    return { message: raw.replace(/\s+/g, " ").trim().slice(0, 1200) };
+  }
+}
+
 function parseJson(value: unknown) {
-  if (typeof value !== "string") return value;
+  if (value && typeof value === "object") return value;
+  if (typeof value !== "string") throw new Error("Model returned no structured extraction data.");
+
   const cleaned = value.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   try {
     return JSON.parse(cleaned);
@@ -35,6 +69,18 @@ function parseJson(value: unknown) {
 
 function safeString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function messageText(message: any) {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => typeof part === "string" ? part : typeof part?.text === "string" ? part.text : "")
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
 }
 
 export async function POST(req: NextRequest) {
@@ -65,32 +111,30 @@ export async function POST(req: NextRequest) {
     }
 
     const hasPdf = attachments.some((file) => file.dataUrl && file.type === "application/pdf");
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000",
-        "X-Title": "ScholarForge AI by Samir Puri",
+    const response = await openRouterFetch({
+      model: MODEL,
+      messages: [
+        { role: "system", content: "You are a precise academic document parser. Return a single valid JSON object only, without markdown fences or commentary." },
+        { role: "user", content },
+      ],
+      response_format: { type: "json_object" },
+      ...(hasPdf ? { plugins: [{ id: "file-parser", pdf: { engine: "cloudflare-ai" } }] } : {}),
+      provider: {
+        sort: "latency",
+        allow_fallbacks: true,
       },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: "system", content: "You are a precise academic document parser. Your entire response must be valid JSON and contain no markdown fences or commentary." },
-          { role: "user", content },
-        ],
-        ...(hasPdf ? { plugins: [{ id: "file-parser", pdf: { engine: "cloudflare-ai" } }] } : {}),
-        temperature: 0.1,
-        max_completion_tokens: 2200,
-      }),
-    });
+      temperature: 0.1,
+      max_completion_tokens: 1400,
+    }, apiKey);
 
-    const data = await response.json();
+    const data = await readProviderPayload(response);
     if (!response.ok) {
-      return NextResponse.json({ error: data?.error?.message || data?.message || "OpenRouter extraction request failed." }, { status: response.status });
+      const providerMessage = data?.error?.message || data?.message || `OpenRouter extraction request failed (${response.status}).`;
+      return NextResponse.json({ error: providerMessage }, { status: response.status });
     }
 
-    const raw = parseJson(data?.choices?.[0]?.message?.content);
+    const rawText = messageText(data?.choices?.[0]?.message);
+    const raw = parseJson(rawText || data?.choices?.[0]?.message?.content);
     const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
     const level = safeString(record.level);
     const citationStyle = safeString(record.citationStyle);
@@ -104,9 +148,16 @@ export async function POST(req: NextRequest) {
       instructions: safeString(record.instructions).slice(0, 16000),
     };
 
-    return NextResponse.json({ fields });
+    return NextResponse.json({ fields, model: data?.model || MODEL });
   } catch (error) {
-    console.error(error);
-    return NextResponse.json({ error: "Could not extract details from the uploaded questions." }, { status: 500 });
+    console.error("Extraction route error:", error);
+    if (error instanceof Error && (error.name === "AbortError" || /aborted|timeout/i.test(error.message))) {
+      return NextResponse.json(
+        { error: "Automatic question extraction took too long on the free router. Your files are still attached; you can fill the fields manually or try the upload again." },
+        { status: 504 }
+      );
+    }
+    const message = error instanceof Error ? error.message : "Could not extract details from the uploaded questions.";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
