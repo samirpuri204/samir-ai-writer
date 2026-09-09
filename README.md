@@ -7,7 +7,7 @@ A Vercel-ready 3D Assignment Writer + Lab Task Writer powered by OpenRouter.
 Default model:
 
 ```text
-thinkingmachines/inkling:free
+openrouter/free
 ```
 
 You can override it with `OPENROUTER_MODEL` without editing code.
@@ -39,7 +39,7 @@ Edit `.env.local`:
 
 ```env
 OPENROUTER_API_KEY=your_key_here
-OPENROUTER_MODEL=thinkingmachines/inkling:free
+OPENROUTER_MODEL=openrouter/free
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 ```
 
@@ -57,15 +57,15 @@ Open http://localhost:3000
 2. Import the repository in Vercel.
 3. In **Project → Settings → Environment Variables**, add:
    - `OPENROUTER_API_KEY` = your OpenRouter key
-   - `OPENROUTER_MODEL` = `thinkingmachines/inkling:free`
+   - `OPENROUTER_MODEL` = `openrouter/free`
    - `NEXT_PUBLIC_SITE_URL` = your final Vercel/custom-domain URL
 4. Deploy.
 
 Do **not** prefix your API key with `NEXT_PUBLIC_`; that would expose it to browser JavaScript.
 
-## Free Inkling endpoint notice
+## Free model notice
 
-OpenRouter currently labels `thinkingmachines/inkling:free` as a free research endpoint for agentic harnesses and states that prompts/outputs may be logged for model improvement. Avoid confidential or personal documents, and confirm that your intended production use complies with the provider's current terms.
+The default model is OpenRouter's free `openrouter/free` endpoint. Free endpoints can be rate-limited or temporarily unavailable, so the app now surfaces provider/server errors cleanly instead of crashing while parsing a non-JSON error page.
 
 ## Upload behavior and size note
 
