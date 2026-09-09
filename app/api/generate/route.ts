@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 type Attachment = {
   name: string;
@@ -22,7 +22,51 @@ type RequestBody = {
   attachments?: Attachment[];
 };
 
-const MODEL = process.env.OPENROUTER_MODEL || "thinkingmachines/inkling:free";
+const MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
+const OPENROUTER_TIMEOUT_MS = 270_000;
+
+async function openRouterFetch(payload: Record<string, unknown>, apiKey: string) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
+  try {
+    return await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000",
+        "X-Title": "ScholarForge AI by Samir Puri",
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+      cache: "no-store",
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readProviderPayload(response: Response): Promise<Record<string, any>> {
+  const raw = await response.text();
+  if (!raw.trim()) return {};
+  try {
+    return JSON.parse(raw) as Record<string, any>;
+  } catch {
+    return { message: raw.replace(/\s+/g, " ").trim().slice(0, 1200) };
+  }
+}
+
+function messageText(message: any) {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => typeof part === "string" ? part : typeof part?.text === "string" ? part.text : "")
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
+}
 
 function systemPrompt(mode: "assignment" | "lab") {
   if (mode === "lab") {
@@ -68,40 +112,45 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000",
-        "X-Title": "ScholarForge AI by Samir Puri",
+    const response = await openRouterFetch({
+      model: MODEL,
+      messages: [
+        { role: "system", content: systemPrompt(body.mode) },
+        { role: "user", content },
+      ],
+      ...(content.some((part) => part.type === "file")
+        ? { plugins: [{ id: "file-parser", pdf: { engine: "cloudflare-ai" } }] }
+        : {}),
+      provider: {
+        sort: "throughput",
+        allow_fallbacks: true,
       },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: "system", content: systemPrompt(body.mode) },
-          { role: "user", content },
-        ],
-        ...(content.some((part) => part.type === "file")
-          ? { plugins: [{ id: "file-parser", pdf: { engine: "cloudflare-ai" } }] }
-          : {}),
-        temperature: 0.55,
-        max_completion_tokens: 6500,
-      }),
-    });
+      temperature: 0.5,
+      max_completion_tokens: 5000,
+    }, apiKey);
 
-    const data = await response.json();
+    const data = await readProviderPayload(response);
     if (!response.ok) {
-      const message = data?.error?.message || data?.message || "OpenRouter request failed.";
+      const message = data?.error?.message || data?.message || `OpenRouter request failed (${response.status}).`;
       return NextResponse.json({ error: message }, { status: response.status });
     }
 
-    const output = data?.choices?.[0]?.message?.content;
-    if (!output) return NextResponse.json({ error: "The model returned an empty response." }, { status: 502 });
+    const output = messageText(data?.choices?.[0]?.message);
+    if (!output.trim()) {
+      const providerMessage = data?.message ? ` Provider response: ${data.message}` : "";
+      return NextResponse.json({ error: `The model returned an empty response.${providerMessage}` }, { status: 502 });
+    }
 
     return NextResponse.json({ output, model: data?.model || MODEL, usage: data?.usage || null });
   } catch (error) {
-    console.error(error);
-    return NextResponse.json({ error: "Unexpected server error. Please try again." }, { status: 500 });
+    console.error("Generation route error:", error);
+    if (error instanceof Error && (error.name === "AbortError" || /aborted|timeout/i.test(error.message))) {
+      return NextResponse.json(
+        { error: "The free OpenRouter model took too long to respond. Please try Generate again; the free router may select a different available model on the next request." },
+        { status: 504 }
+      );
+    }
+    const message = error instanceof Error ? error.message : "Unexpected server error. Please try again.";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
