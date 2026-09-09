@@ -62,6 +62,27 @@ function attachmentBytes(file: UploadFile) {
   return dataUrlBytes(file.dataUrl);
 }
 
+async function readApiPayload(res: Response): Promise<Record<string, any>> {
+  const raw = await res.text();
+  if (!raw.trim()) {
+    if (!res.ok) throw new Error(`Server request failed (${res.status}).`);
+    return {};
+  }
+
+  try {
+    return JSON.parse(raw) as Record<string, any>;
+  } catch {
+    const compact = raw.replace(/\s+/g, " ").trim().slice(0, 500);
+    if (res.status === 413) {
+      throw new Error("The uploaded files are too large for the server request. Remove one file or upload smaller images/PDFs.");
+    }
+    if (!res.ok) {
+      throw new Error(compact || `Server request failed (${res.status}).`);
+    }
+    throw new Error(`The server returned a non-JSON response: ${compact || "empty response"}`);
+  }
+}
+
 async function compressImage(file: File): Promise<string> {
   const source = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -166,8 +187,8 @@ export default function WriterStudio() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode, attachments }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Could not auto-detect document details.");
+      const data = await readApiPayload(res);
+      if (!res.ok) throw new Error(data.error || data.message || `Could not auto-detect document details (${res.status}).`);
       const fields = (data.fields || {}) as ExtractedFields;
       let filled = 0;
 
@@ -236,8 +257,9 @@ export default function WriterStudio() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode, title, subject, level, wordCount, citationStyle, instructions, attachments }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Generation failed.");
+      const data = await readApiPayload(res);
+      if (!res.ok) throw new Error(data.error || data.message || `Generation failed (${res.status}).`);
+      if (typeof data.output !== "string" || !data.output.trim()) throw new Error("The AI returned an empty response.");
       setOutput(data.output);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 160);
     } catch (e) {
